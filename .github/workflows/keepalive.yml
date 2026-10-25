@@ -1,0 +1,137 @@
+name: dept-cloud-keepalive
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 0,6,12,18 * * *'   # 每6小时（UTC），北京时间 08:15/14:15/20:15/次日02:15
+permissions:
+  contents: write
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 拉取私有系统代码
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git clone https://x-access-token:${GH_TOKEN}@github.com/1759717772/dept-cloud-node.git /tmp/dept
+          ls /tmp/dept | head -20
+
+      - name: 下载 cloudflared
+        run: |
+          cd /tmp
+          curl -sL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          ./cloudflared --version
+
+      - name: 启动服务与隧道
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          set -x
+          cd /tmp/dept
+          PORT=18190 nohup node server.js > /tmp/server.log 2>&1 &
+          for i in $(seq 1 30); do
+            sleep 1
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18190/ || true)
+            [ "$code" = "200" ] && break
+          done
+          echo "server http=$code"
+          cd /tmp
+          nohup ./cloudflared tunnel --url http://127.0.0.1:18190 --no-autoupdate --protocol http2 > /tmp/cf.log 2>&1 &
+          URL=""
+          for i in $(seq 1 60); do
+            sleep 2
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
+            [ -n "$URL" ] && break
+          done
+          echo "tunnel=$URL"
+          # 验证公网可达
+          code=""
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
+            [ "$code" = "200" ] && break
+            sleep 3
+          done
+          echo "public http=$code URL=$URL"
+          [ -z "$URL" ] && exit 1
+          echo "$URL" > /tmp/url.txt
+
+      - name: 更新公告牌
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          URL=$(cat /tmp/url.txt)
+          git clone https://x-access-token:${GH_TOKEN}@github.com/1759717772/dept-cloud-addr.git /tmp/addr
+          cd /tmp/addr
+          git config user.email "dept-cloud@users.noreply.github.com"
+          git config user.name "dept-cloud-keepalive"
+          NOW=$(date '+%Y-%m-%d %H:%M:%S')
+          printf 'biz=%s\nbiz2=%s\nbackup=%s\nupdated=%s\n' "$URL" "$URL" "" "$NOW" > addr.txt
+          git add addr.txt && git commit -m "keepalive $NOW" || true
+          git pull --rebase origin main 2>/dev/null || true
+          git push origin main || true
+          echo "公告牌已更新: $URL"
+
+      - name: 保活循环（约5.5小时）
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          URL=$(cat /tmp/url.txt)
+          END=$(( $(date +%s) + 330*60 ))
+          LAST_BIZ=""
+          while [ "$(date +%s)" -lt "$END" ]; do
+            # 1) 隧道公网探测，失效则重启隧道并更新公告牌
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
+            if [ "$code" != "200" ]; then
+              pkill -f cloudflared 2>/dev/null || true
+              cd /tmp
+              nohup ./cloudflared tunnel --url http://127.0.0.1:18190 --no-autoupdate --protocol http2 > /tmp/cf.log 2>&1 &
+              NEW=""
+              for i in $(seq 1 60); do
+                sleep 2
+                NEW=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
+                [ -n "$NEW" ] && break
+              done
+              if [ -n "$NEW" ]; then
+                echo "$NEW" > /tmp/url.txt
+                URL="$NEW"
+                cd /tmp/addr
+                git config user.email "dept-cloud@users.noreply.github.com"
+                git config user.name "dept-cloud-keepalive"
+                NOW=$(date '+%Y-%m-%d %H:%M:%S')
+                printf 'biz=%s\nbiz2=%s\nbackup=%s\nupdated=%s\n' "$URL" "$URL" "" "$NOW" > addr.txt
+                git add addr.txt && git commit -m "renew $NOW" || true
+                git pull --rebase origin main 2>/dev/null || true
+                git push origin main || true
+              fi
+            fi
+            # 2) 内部服务探测，失效重启
+            c2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:18190/ || true)
+            if [ "$c2" != "200" ]; then
+              cd /tmp/dept
+              PORT=18190 nohup node server.js > /tmp/server.log 2>&1 &
+              sleep 3
+            fi
+            sleep 20
+          done
+          echo "本轮服务结束"
+
+      - name: 数据备份回仓库
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          cd /tmp/dept
+          git config user.email "dept-cloud@users.noreply.github.com"
+          git config user.name "dept-cloud-keepalive"
+          git add data/system.db
+          git commit -m "data backup $(date '+%Y-%m-%d %H:%M:%S')" || true
+          git pull --rebase origin main 2>/dev/null || true
+          git push origin main || true
+          echo "数据已备份"
