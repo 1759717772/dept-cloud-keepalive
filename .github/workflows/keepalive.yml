@@ -34,14 +34,16 @@ jobs:
         run: |
           cd /tmp/dept
           PORT=18190 nohup node server.js > /tmp/server.log 2>&1 &
+          SOK=""
           for i in $(seq 1 30); do
             sleep 1
             code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18190/ || true)
-            [ "$code" = "200" ] && break
+            [ "$code" = "200" ] && SOK=1 && break
           done
-          echo "server http=$code"
+          echo "server http=${code:-none}"
+          [ -z "$SOK" ] && { tail -20 /tmp/server.log; exit 2; }
           cd /tmp
-          nohup ./cloudflared tunnel --url http://127.0.0.1:18190 --no-autoupdate --protocol http2 > /tmp/cf.log 2>&1 &
+          nohup ./cloudflared tunnel --url http://127.0.0.1:18190 --no-autoupdate > /tmp/cf.log 2>&1 &
           URL=""
           for i in $(seq 1 60); do
             sleep 2
@@ -49,14 +51,15 @@ jobs:
             [ -n "$URL" ] && break
           done
           echo "tunnel=$URL"
+          [ -z "$URL" ] && { tail -20 /tmp/cf.log; exit 3; }
           code=""
-          for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
+          for i in $(seq 1 45); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || true)
             [ "$code" = "200" ] && break
-            sleep 3
+            sleep 4
           done
           echo "public http=$code URL=$URL"
-          [ -z "$URL" ] && exit 1
+          [ "$code" != "200" ] && { tail -20 /tmp/cf.log; ps aux | grep -c cloudflared; exit 4; }
           echo "$URL" > /tmp/url.txt
 
       - name: 更新公告牌
