@@ -21,8 +21,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
+          git config --global http.extraheader "AUTHORIZATION: basic ${AUTH}"
           git clone https://github.com/1759717772/dept-cloud-node.git /tmp/dept
-          cd /tmp/dept && git config http.extraheader "AUTHORIZATION: basic ${AUTH}"
           ls /tmp/dept | head -10
 
       - name: 下载 cloudflared
@@ -67,8 +67,9 @@ jobs:
         run: |
           URL=$(cat /tmp/url.txt)
           AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
+          git config --global http.extraheader "AUTHORIZATION: basic ${AUTH}"
           git clone https://github.com/1759717772/dept-cloud-addr.git /tmp/addr
-          cd /tmp/addr && git config http.extraheader "AUTHORIZATION: basic ${AUTH}"
+          cd /tmp/addr
           git config user.email "dept-cloud@users.noreply.github.com"
           git config user.name "dept-cloud-keepalive"
           NOW=$(date '+%Y-%m-%d %H:%M:%S')
