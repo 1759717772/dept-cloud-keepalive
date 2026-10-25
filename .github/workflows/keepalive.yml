@@ -2,9 +2,13 @@ name: dept-cloud-keepalive
 on:
   workflow_dispatch:
   schedule:
-    - cron: '15 0,6,12,18 * * *'   # 每6小时（UTC），北京时间 08:15/14:15/20:15/次日02:15
+    # 每15分钟一次（UTC），对应北京时间每小时的第 00/15/30/45 分钟触发
+    - cron: '*/15 * * * *'
 permissions:
   contents: write
+concurrency:
+  group: dept-keepalive
+  cancel-in-progress: false
 
 jobs:
   serve:
@@ -16,7 +20,29 @@ jobs:
         with:
           node-version: '22'
 
+      - name: 看门狗健康检查（隧道存活则秒退）
+        id: watchdog
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          URL=$(curl -sL --max-time 15 "https://1759717772.github.io/dept-cloud-addr/addr.txt" 2>/dev/null | grep '^biz=' | cut -d= -f2-)
+          if [ -z "$URL" ]; then
+            echo "公告牌无地址，进入主流程重建"
+            echo "mode=rebuild" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$URL" || true)
+          echo "看门狗检查: $URL → HTTP $code"
+          if [ "$code" = "200" ]; then
+            echo "隧道存活，本轮仅健康检查，退出"
+            echo "mode=healthy" >> "$GITHUB_OUTPUT"
+          else
+            echo "隧道不可达，进入主流程重建"
+            echo "mode=rebuild" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 拉取私有系统代码
+        if: steps.watchdog.outputs.mode == 'rebuild'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
@@ -24,6 +50,7 @@ jobs:
           ls /tmp/dept | head -10
 
       - name: 下载 cloudflared
+        if: steps.watchdog.outputs.mode == 'rebuild'
         run: |
           cd /tmp
           curl -sL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
@@ -31,6 +58,7 @@ jobs:
           ./cloudflared --version
 
       - name: 启动服务与隧道
+        if: steps.watchdog.outputs.mode == 'rebuild'
         run: |
           cd /tmp/dept
           PORT=18190 nohup node server.js > /tmp/server.log 2>&1 &
@@ -63,6 +91,7 @@ jobs:
           echo "$URL" > /tmp/url.txt
 
       - name: 更新公告牌
+        if: steps.watchdog.outputs.mode == 'rebuild'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
@@ -79,6 +108,7 @@ jobs:
           echo "公告牌已更新: $URL"
 
       - name: 保活循环（约5.5小时）
+        if: steps.watchdog.outputs.mode == 'rebuild'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
@@ -120,6 +150,7 @@ jobs:
           echo "本轮服务结束"
 
       - name: 数据备份回仓库
+        if: steps.watchdog.outputs.mode == 'rebuild'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
