@@ -118,8 +118,15 @@ jobs:
           printf 'biz=%s\nbiz2=%s\nbackup=%s\nversion=%s\nupdated=%s\n' "$URL" "$URL" "" "$VER" "$NOW" > addr.txt
           git add addr.txt && git commit -m "keepalive $NOW" || true
           git pull --rebase origin main 2>/dev/null || true
-          git push origin main || true
-          echo "公告牌已更新: $URL (version=$VER)"
+          if git push origin main 2>/dev/null; then
+            echo "公告牌推送成功: $URL (version=$VER)"
+          else
+            echo "公告牌首次推送失败，拉取重试…"
+            git reset --hard origin/main 2>/dev/null || true
+            printf 'biz=%s\nbiz2=%s\nbackup=%s\nversion=%s\nupdated=%s\n' "$URL" "$URL" "" "$VER" "$NOW" > addr.txt
+            git add addr.txt && git commit -m "keepalive $NOW retry" || true
+            git push origin main 2>/dev/null && echo "公告牌重试推送成功: $URL" || echo "公告牌推送失败(重试后)，但隧道已可用，15分钟后看门狗会再同步"
+          fi
 
       - name: 保活循环（约5.5小时）
         if: steps.watchdog.outputs.mode == 'rebuild'
@@ -151,7 +158,7 @@ jobs:
                 printf 'biz=%s\nbiz2=%s\nbackup=%s\nversion=%s\nupdated=%s\n' "$URL" "$URL" "" "$VER" "$NOW" > addr.txt
                 git add addr.txt && git commit -m "renew $NOW" || true
                 git pull --rebase origin main 2>/dev/null || true
-                git push origin main || true
+                git push origin main 2>/dev/null && echo "renew 公告牌成功: $URL" || echo "renew 公告牌失败(稍后看门狗兜底)"
               fi
             fi
             c2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:18190/ || true)
