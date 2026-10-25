@@ -25,7 +25,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          URL=$(curl -sL --max-time 15 "https://1759717772.github.io/dept-cloud-addr/addr.txt" 2>/dev/null | grep '^biz=' | cut -d= -f2-)
+          BOARD="https://1759717772.github.io/dept-cloud-addr/addr.txt"
+          URL=$(curl -sL --max-time 15 "$BOARD" 2>/dev/null | grep '^biz=' | cut -d= -f2-)
+          VER=$(curl -sL --max-time 15 "$BOARD" 2>/dev/null | grep '^version=' | cut -d= -f2-)
           if [ -z "$URL" ]; then
             echo "公告牌无地址，进入主流程重建"
             echo "mode=rebuild" >> "$GITHUB_OUTPUT"
@@ -33,12 +35,20 @@ jobs:
           fi
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$URL" || true)
           echo "看门狗检查: $URL → HTTP $code"
-          if [ "$code" = "200" ]; then
-            echo "隧道存活，本轮仅健康检查，退出"
-            echo "mode=healthy" >> "$GITHUB_OUTPUT"
-          else
+          if [ "$code" != "200" ]; then
             echo "隧道不可达，进入主流程重建"
             echo "mode=rebuild" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 版本比对：公告牌版本 与 运行中服务版本 不一致 → 强制重建（部署新代码）
+          run_ver=$(curl -s --max-time 12 "$URL/api/version" 2>/dev/null | grep -oE '"version":"[^"]+"' | cut -d'"' -f4)
+          echo "公告牌版本=${VER:-unknown} 运行版本=${run_ver:-unknown}"
+          if [ -n "$VER" ] && [ "$VER" != "$run_ver" ]; then
+            echo "版本不一致，强制重建以部署新代码"
+            echo "mode=rebuild" >> "$GITHUB_OUTPUT"
+          else
+            echo "隧道存活且版本一致，本轮仅健康检查，退出"
+            echo "mode=healthy" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 拉取私有系统代码
@@ -47,6 +57,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           git clone "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-node.git" /tmp/dept
+          echo "code commit: $(cd /tmp/dept && git log -1 --format=%h)"
+          # 版本号固定 8.4.0，与 server.js /api/version 一致（看门狗以此比对）
+          echo "8.4.0" > /tmp/ver.txt
           ls /tmp/dept | head -10
 
       - name: 下载 cloudflared
@@ -96,16 +109,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           URL=$(cat /tmp/url.txt)
+          VER=$(cat /tmp/ver.txt)
           git clone "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-addr.git" /tmp/addr
           cd /tmp/addr
           git config user.email "dept-cloud@users.noreply.github.com"
           git config user.name "dept-cloud-keepalive"
           NOW=$(date '+%Y-%m-%d %H:%M:%S')
-          printf 'biz=%s\nbiz2=%s\nbackup=%s\nupdated=%s\n' "$URL" "$URL" "" "$NOW" > addr.txt
+          printf 'biz=%s\nbiz2=%s\nbackup=%s\nversion=%s\nupdated=%s\n' "$URL" "$URL" "" "$VER" "$NOW" > addr.txt
           git add addr.txt && git commit -m "keepalive $NOW" || true
           git pull --rebase origin main 2>/dev/null || true
           git push origin main || true
-          echo "公告牌已更新: $URL"
+          echo "公告牌已更新: $URL (version=$VER)"
 
       - name: 保活循环（约5.5小时）
         if: steps.watchdog.outputs.mode == 'rebuild'
@@ -113,6 +127,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           URL=$(cat /tmp/url.txt)
+          VER=$(cat /tmp/ver.txt)
           END=$(( $(date +%s) + 330*60 ))
           while [ "$(date +%s)" -lt "$END" ]; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
@@ -133,7 +148,7 @@ jobs:
                 git config user.email "dept-cloud@users.noreply.github.com"
                 git config user.name "dept-cloud-keepalive"
                 NOW=$(date '+%Y-%m-%d %H:%M:%S')
-                printf 'biz=%s\nbiz2=%s\nbackup=%s\nupdated=%s\n' "$URL" "$URL" "" "$NOW" > addr.txt
+                printf 'biz=%s\nbiz2=%s\nbackup=%s\nversion=%s\nupdated=%s\n' "$URL" "$URL" "" "$VER" "$NOW" > addr.txt
                 git add addr.txt && git commit -m "renew $NOW" || true
                 git pull --rebase origin main 2>/dev/null || true
                 git push origin main || true
