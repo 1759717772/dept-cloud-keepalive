@@ -20,9 +20,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
-          git config --global http.extraheader "AUTHORIZATION: basic ${AUTH}"
-          git clone https://github.com/1759717772/dept-cloud-node.git /tmp/dept
+          git clone "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-node.git" /tmp/dept
           ls /tmp/dept | head -10
 
       - name: 下载 cloudflared
@@ -66,9 +64,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           URL=$(cat /tmp/url.txt)
-          AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
-          git config --global http.extraheader "AUTHORIZATION: basic ${AUTH}"
-          git clone https://github.com/1759717772/dept-cloud-addr.git /tmp/addr
+          git clone "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-addr.git" /tmp/addr
           cd /tmp/addr
           git config user.email "dept-cloud@users.noreply.github.com"
           git config user.name "dept-cloud-keepalive"
@@ -84,7 +80,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           URL=$(cat /tmp/url.txt)
-          AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
           END=$(( $(date +%s) + 330*60 ))
           while [ "$(date +%s)" -lt "$END" ]; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
@@ -125,9 +120,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
           cd /tmp/dept
-          git config http.extraheader "AUTHORIZATION: basic ${AUTH}"
+          git remote set-url origin "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-node.git"
           git config user.email "dept-cloud@users.noreply.github.com"
           git config user.name "dept-cloud-keepalive"
           git add data/system.db
