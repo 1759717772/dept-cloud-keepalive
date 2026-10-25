@@ -20,8 +20,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          git clone https://x-access-token:${GH_TOKEN}@github.com/1759717772/dept-cloud-node.git /tmp/dept
-          ls /tmp/dept | head -20
+          AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
+          git clone https://github.com/1759717772/dept-cloud-node.git /tmp/dept
+          cd /tmp/dept && git config http.extraheader "AUTHORIZATION: basic ${AUTH}"
+          ls /tmp/dept | head -10
 
       - name: 下载 cloudflared
         run: |
@@ -31,10 +33,7 @@ jobs:
           ./cloudflared --version
 
       - name: 启动服务与隧道
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          set -x
           cd /tmp/dept
           PORT=18190 nohup node server.js > /tmp/server.log 2>&1 &
           for i in $(seq 1 30); do
@@ -52,7 +51,6 @@ jobs:
             [ -n "$URL" ] && break
           done
           echo "tunnel=$URL"
-          # 验证公网可达
           code=""
           for i in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
@@ -68,8 +66,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           URL=$(cat /tmp/url.txt)
-          git clone https://x-access-token:${GH_TOKEN}@github.com/1759717772/dept-cloud-addr.git /tmp/addr
-          cd /tmp/addr
+          AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
+          git clone https://github.com/1759717772/dept-cloud-addr.git /tmp/addr
+          cd /tmp/addr && git config http.extraheader "AUTHORIZATION: basic ${AUTH}"
           git config user.email "dept-cloud@users.noreply.github.com"
           git config user.name "dept-cloud-keepalive"
           NOW=$(date '+%Y-%m-%d %H:%M:%S')
@@ -84,10 +83,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           URL=$(cat /tmp/url.txt)
+          AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
           END=$(( $(date +%s) + 330*60 ))
-          LAST_BIZ=""
           while [ "$(date +%s)" -lt "$END" ]; do
-            # 1) 隧道公网探测，失效则重启隧道并更新公告牌
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
             if [ "$code" != "200" ]; then
               pkill -f cloudflared 2>/dev/null || true
@@ -112,7 +110,6 @@ jobs:
                 git push origin main || true
               fi
             fi
-            # 2) 内部服务探测，失效重启
             c2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:18190/ || true)
             if [ "$c2" != "200" ]; then
               cd /tmp/dept
@@ -127,7 +124,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
+          AUTH=$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)
           cd /tmp/dept
+          git config http.extraheader "AUTHORIZATION: basic ${AUTH}"
           git config user.email "dept-cloud@users.noreply.github.com"
           git config user.name "dept-cloud-keepalive"
           git add data/system.db
