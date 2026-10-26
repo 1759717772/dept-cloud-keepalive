@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   schedule:
     # 每15分钟一次（UTC），对应北京时间每小时的第 00/15/30/45 分钟触发
-    - cron: '4,19,34,49'
+    - cron: '4,19,34,49 * * * *'
 permissions:
   contents: write
 concurrency:
