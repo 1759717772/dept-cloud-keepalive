@@ -15,8 +15,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
+          set +e
           RAW=$(curl -s --noproxy '*' --max-time 10 "https://raw.githubusercontent.com/1759717772/dept-cloud-addr/main/addr.txt" 2>/dev/null)
-          [ -z "$RAW" ] && { echo "公告牌读取失败，退出"; exit 0; }
+          if [ -z "$RAW" ]; then
+            echo "公告牌读取失败，退出"
+            exit 0
+          fi
           declare -A WF
           WF[biz]=keepalive.yml
           WF[backup]=keepalive-b1.yml
@@ -28,7 +32,11 @@ jobs:
           REPORT=""
           for K in biz backup backup2 backup3 backup4 backup5 backup6; do
             URL=$(echo "$RAW" | grep "^${K}=" | cut -d= -f2-)
-            [ -z "$URL" ] && { echo "$K: 公告牌无此行"; REPORT="$REPORT $K=无行"; continue; }
+            if [ -z "$URL" ]; then
+              echo "$K: 公告牌无此行"
+              REPORT="$REPORT $K=无行"
+              continue
+            fi
             CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 8 "$URL" 2>/dev/null)
             VER=$(curl -s --noproxy '*' --max-time 8 "$URL/api/version" 2>/dev/null | grep -oE '"version":"[^"]+"' | cut -d'"' -f4)
             if [ "$CODE" = "200" ] && [ "$VER" = "8.5.0" ]; then
@@ -39,14 +47,21 @@ jobs:
               WFSPEC=${WF[$K]}
               WFNAME=${WFSPEC%%:*}
               REPO=1759717772/dept-cloud-keepalive
-              [[ "$WFSPEC" == *:pub ]] && REPO=1759717772/dept-cloud-keepalive-pub
-              RUN=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 1 --json status -q '.[0].status' 2>/dev/null || echo "none")
+              if [[ "$WFSPEC" == *:pub ]]; then
+                REPO=1759717772/dept-cloud-keepalive-pub
+              fi
+              RUN=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 1 --json status -q '.[0].status' 2>/dev/null)
+              if [ -z "$RUN" ]; then RUN="none"; fi
               echo "$K: 对应run状态=$RUN"
               case "$RUN" in
-                in_progress|queued|pending) echo "$K: 有在途run，跳过（循环自愈/build中）";;
-                *) echo "$K: 无在途run -> 手动dispatch $WFNAME"
-                   gh workflow run "$WFNAME" --repo "$REPO" 2>&1 | tail -1 || true
-                   sleep 3;;
+                in_progress|queued|pending)
+                  echo "$K: 有在途run，跳过（循环自愈/build中）"
+                  ;;
+                *)
+                  echo "$K: 无在途run -> 手动dispatch $WFNAME"
+                  gh workflow run "$WFNAME" --repo "$REPO" 2>&1 | tail -1
+                  sleep 3
+                  ;;
               esac
               REPORT="$REPORT $K=$CODE"
             fi
