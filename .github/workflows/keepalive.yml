@@ -135,7 +135,7 @@ jobs:
         run: |
           URL=$(cat /tmp/url.txt)
           VER=$(cat /tmp/ver.txt)
-          END=$(( $(date +%s) + 330*60 ))
+          END=$(( $(date +%s) + 240*60 ))
           while [ "$(date +%s)" -lt "$END" ]; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
             if [ "$code" != "200" ]; then
