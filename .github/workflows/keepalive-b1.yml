@@ -1,0 +1,169 @@
+name: dept-cloud-keepalive-b1
+on:
+  workflow_dispatch:
+  schedule:
+    # 每15分钟一次（UTC），对应北京时间每小时的第 00/15/30/45 分钟触发
+    - cron: '2,17,32,47'
+permissions:
+  contents: write
+concurrency:
+  group: dept-keepalive-b1
+  cancel-in-progress: false
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 看门狗健康检查（隧道存活则秒退）
+        id: watchdog
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          BOARD="https://1759717772.github.io/dept-cloud-addr/addr.txt"
+          URL=$(curl -sL --max-time 15 "$BOARD" 2>/dev/null | grep '^backup=' | cut -d= -f2-)
+          VER=$(curl -sL --max-time 15 "$BOARD" 2>/dev/null | grep '^version=' | cut -d= -f2-)
+          if [ -z "$URL" ]; then
+            echo "公告牌无地址，进入主流程重建"
+            echo "mode=rebuild" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$URL" || true)
+          echo "看门狗检查: $URL → HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "隧道不可达，进入主流程重建"
+            echo "mode=rebuild" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 版本比对：公告牌版本 与 运行中服务版本 不一致 → 强制重建（部署新代码）
+          run_ver=$(curl -s --max-time 12 "$URL/api/version" 2>/dev/null | grep -oE '"version":"[^"]+"' | cut -d'"' -f4)
+          echo "公告牌版本=${VER:-unknown} 运行版本=${run_ver:-unknown}"
+          if [ -n "$VER" ] && [ "$VER" != "$run_ver" ]; then
+            echo "版本不一致，强制重建以部署新代码"
+            echo "mode=rebuild" >> "$GITHUB_OUTPUT"
+          else
+            echo "隧道存活且版本一致，本轮仅健康检查，退出"
+            echo "mode=healthy" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 拉取私有系统代码
+        if: steps.watchdog.outputs.mode == 'rebuild'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git clone "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-node.git" /tmp/dept
+          echo "code commit: $(cd /tmp/dept && git log -1 --format=%h)"
+          # 版本号固定 8.5.0，与 server.js /api/version 一致（看门狗以此比对）
+          echo "8.5.0" > /tmp/ver.txt
+          ls /tmp/dept | head -10
+
+      - name: 下载 cloudflared
+        if: steps.watchdog.outputs.mode == 'rebuild'
+        run: |
+          cd /tmp
+          curl -sL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          ./cloudflared --version
+
+      - name: 启动服务与隧道
+        if: steps.watchdog.outputs.mode == 'rebuild'
+        run: |
+          cd /tmp/dept
+          PORT=18190 nohup node server.js > /tmp/server.log 2>&1 &
+          SOK=""
+          for i in $(seq 1 30); do
+            sleep 1
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18190/ || true)
+            [ "$code" = "200" ] && SOK=1 && break
+          done
+          echo "server http=${code:-none}"
+          [ -z "$SOK" ] && { tail -20 /tmp/server.log; exit 2; }
+          cd /tmp
+          nohup ./cloudflared tunnel --url http://127.0.0.1:18190 --no-autoupdate > /tmp/cf.log 2>&1 &
+          URL=""
+          for i in $(seq 1 60); do
+            sleep 2
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
+            [ -n "$URL" ] && break
+          done
+          echo "tunnel=$URL"
+          [ -z "$URL" ] && { tail -20 /tmp/cf.log; exit 3; }
+          code=""
+          for i in $(seq 1 45); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL" || true)
+            [ "$code" = "200" ] && break
+            sleep 4
+          done
+          echo "public http=$code URL=$URL"
+          [ "$code" != "200" ] && { tail -20 /tmp/cf.log; ps aux | grep -c cloudflared; exit 4; }
+          echo "$URL" > /tmp/url.txt
+
+      - name: 更新公告牌
+        if: steps.watchdog.outputs.mode == 'rebuild'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          URL=$(cat /tmp/url.txt)
+          VER=$(cat /tmp/ver.txt)
+          cp "${GITHUB_WORKSPACE}/board.sh" /tmp/board.sh && chmod +x /tmp/board.sh
+          NOW=$(date '+%Y-%m-%d %H:%M:%S')
+          bash /tmp/board.sh "backup=${URL}|updated_b1=${NOW}" ""
+          echo "公告牌更新完成: $URL (version=$VER)"
+
+      - name: 保活循环（约5.5小时）
+        if: steps.watchdog.outputs.mode == 'rebuild'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          URL=$(cat /tmp/url.txt)
+          VER=$(cat /tmp/ver.txt)
+          END=$(( $(date +%s) + 240*60 ))
+          while [ "$(date +%s)" -lt "$END" ]; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
+            if [ "$code" != "200" ]; then
+              pkill -f cloudflared 2>/dev/null || true
+              cd /tmp
+              nohup ./cloudflared tunnel --url http://127.0.0.1:18190 --no-autoupdate --protocol http2 > /tmp/cf.log 2>&1 &
+              NEW=""
+              for i in $(seq 1 60); do
+                sleep 2
+                NEW=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
+                [ -n "$NEW" ] && break
+              done
+              if [ -n "$NEW" ]; then
+                echo "$NEW" > /tmp/url.txt
+                URL="$NEW"
+                cp "${GITHUB_WORKSPACE}/board.sh" /tmp/board.sh && chmod +x /tmp/board.sh
+                NOW=$(date '+%Y-%m-%d %H:%M:%S')
+                bash /tmp/board.sh "backup=${URL}|updated_b1=${NOW}" "" && echo "renew 公告牌成功: $URL" || echo "renew 公告牌失败(稍后看门狗兜底)"
+              fi
+            fi
+            c2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:18190/ || true)
+            if [ "$c2" != "200" ]; then
+              cd /tmp/dept
+              PORT=18190 nohup node server.js > /tmp/server.log 2>&1 &
+              sleep 3
+            fi
+            sleep 20
+          done
+          echo "本轮服务结束"
+
+      - name: 数据备份回仓库
+        if: steps.watchdog.outputs.mode == 'rebuild'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          cd /tmp/dept
+          git remote set-url origin "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-node.git"
+          git config user.email "dept-cloud@users.noreply.github.com"
+          git config user.name "dept-cloud-keepalive"
+          git add data/system.db
+          git commit -m "data backup $(date '+%Y-%m-%d %H:%M:%S')" || true
+          git pull --rebase origin main 2>/dev/null || true
+          git push origin main || true
+          echo "数据已备份"
