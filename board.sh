@@ -14,7 +14,7 @@ git config user.name "dept-cloud-keepalive"
 git pull --rebase origin main 2>/dev/null || git reset --hard origin/main 2>/dev/null || true
 
 apply_keys() {
-  printf '%s\n' "$1" | while IFS= read -r kv; do
+  printf '%s' "$1" | tr '|' '\n' | while IFS= read -r kv; do
     [ -z "$kv" ] && continue
     K="${kv%%=*}"
     V="${kv#*=}"
