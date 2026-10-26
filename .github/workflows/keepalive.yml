@@ -115,14 +115,14 @@ jobs:
           bash /tmp/board.sh "biz=${URL}|biz2=${URL}|updated=${NOW}|updated_main=${NOW}" "$VER"
           echo "公告牌更新完成: $URL (version=$VER)"
 
-      - name: 保活循环（约100分钟，缩短占用避免cron看门狗run被并发丢弃）
+      - name: 保活循环（约330分钟5.5h，接近job 6h上限，减少调度空窗；巡检每小时兜底重建）
         if: steps.watchdog.outputs.mode == 'rebuild'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           URL=$(cat /tmp/url.txt)
           VER=$(cat /tmp/ver.txt)
-          END=$(( $(date +%s) + 100*60 ))
+          END=$(( $(date +%s) + 330*60 ))
           while [ "$(date +%s)" -lt "$END" ]; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
             if [ "$code" != "200" ]; then
