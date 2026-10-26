@@ -1,0 +1,54 @@
+name: watchdog
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+jobs:
+  patrol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 探活全部隧道并自动重建
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          RAW=$(curl -s --noproxy '*' --max-time 10 "https://raw.githubusercontent.com/1759717772/dept-cloud-addr/main/addr.txt" 2>/dev/null)
+          [ -z "$RAW" ] && { echo "公告牌读取失败，退出"; exit 0; }
+          declare -A WF
+          WF[biz]=keepalive.yml
+          WF[backup]=keepalive-b1.yml
+          WF[backup2]=keepalive-b2.yml
+          WF[backup3]=keepalive-b3.yml
+          WF[backup4]=keepalive-b4.yml:pub
+          WF[backup5]=keepalive-b5.yml:pub
+          WF[backup6]=keepalive-b6.yml:pub
+          REPORT=""
+          for K in biz backup backup2 backup3 backup4 backup5 backup6; do
+            URL=$(echo "$RAW" | grep "^${K}=" | cut -d= -f2-)
+            [ -z "$URL" ] && { echo "$K: 公告牌无此行"; REPORT="$REPORT $K=无行"; continue; }
+            CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 8 "$URL" 2>/dev/null)
+            VER=$(curl -s --noproxy '*' --max-time 8 "$URL/api/version" 2>/dev/null | grep -oE '"version":"[^"]+"' | cut -d'"' -f4)
+            if [ "$CODE" = "200" ] && [ "$VER" = "8.5.0" ]; then
+              echo "$K: 健康(200 v$VER)"
+              REPORT="$REPORT $K=OK"
+            else
+              echo "$K: 异常($CODE v$VER) -> 检查对应run"
+              WFSPEC=${WF[$K]}
+              WFNAME=${WFSPEC%%:*}
+              REPO=1759717772/dept-cloud-keepalive
+              [[ "$WFSPEC" == *:pub ]] && REPO=1759717772/dept-cloud-keepalive-pub
+              RUN=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 1 --json status -q '.[0].status' 2>/dev/null || echo "none")
+              echo "$K: 对应run状态=$RUN"
+              case "$RUN" in
+                in_progress|queued|pending) echo "$K: 有在途run，跳过（循环自愈/build中）";;
+                *) echo "$K: 无在途run -> 手动dispatch $WFNAME"
+                   gh workflow run "$WFNAME" --repo "$REPO" 2>&1 | tail -1 || true
+                   sleep 3;;
+              esac
+              REPORT="$REPORT $K=$CODE"
+            fi
+          done
+          echo "watchdog 巡检完成: $REPORT"
