@@ -115,17 +115,19 @@ jobs:
           bash /tmp/board.sh "backup3=${URL}|updated_b3=${NOW}" ""
           echo "公告牌更新完成: $URL (version=$VER)"
 
-      - name: 保活循环（约100分钟，缩短占用避免cron看门狗run被并发丢弃）
+      - name: 保活循环（330分钟；连续3次重建失败自动退出释放锁，防僵尸run阻塞看门狗）
         if: steps.watchdog.outputs.mode == 'rebuild'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           URL=$(cat /tmp/url.txt)
           VER=$(cat /tmp/ver.txt)
-          END=$(( $(date +%s) + 330*60 ))
+          END=$(( $(date +%s) + 325*60 ))
+          FAILCNT=0
           while [ "$(date +%s)" -lt "$END" ]; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
             if [ "$code" != "200" ]; then
+              FAILCNT=$((FAILCNT+1))
               pkill -f cloudflared 2>/dev/null || true
               cd /tmp
               nohup ./cloudflared tunnel --url http://127.0.0.1:18190 --no-autoupdate --protocol http2 > /tmp/cf.log 2>&1 &
@@ -135,13 +137,30 @@ jobs:
                 NEW=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
                 [ -n "$NEW" ] && break
               done
+              newok=""
               if [ -n "$NEW" ]; then
+                for i in $(seq 1 15); do
+                  nc=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 "$NEW" || true)
+                  [ "$nc" = "200" ] && newok=1 && break
+                  sleep 3
+                done
+              fi
+              if [ -n "$newok" ]; then
+                FAILCNT=0
                 echo "$NEW" > /tmp/url.txt
                 URL="$NEW"
                 cp "${GITHUB_WORKSPACE}/board.sh" /tmp/board.sh && chmod +x /tmp/board.sh
                 NOW=$(date '+%Y-%m-%d %H:%M:%S')
-                bash /tmp/board.sh "backup3=${URL}|updated_b3=${NOW}" "" && echo "renew 公告牌成功: $URL" || echo "renew 公告牌失败(稍后看门狗兜底)"
+                bash /tmp/board.sh "backup3=${URL}|updated_b3=${NOW}" "$VER" && echo "renew 公告牌成功: $URL" || echo "renew 公告牌失败(稍后看门狗兜底)"
+              else
+                echo "重建失败第${FAILCNT}次(${NEW:-无新域名})"
+                if [ "$FAILCNT" -ge 3 ]; then
+                  echo "连续3次重建失败，退出释放并发锁（由cron/看门狗接管）"
+                  exit 5
+                fi
               fi
+            else
+              FAILCNT=0
             fi
             c2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:18190/ || true)
             if [ "$c2" != "200" ]; then
@@ -164,6 +183,6 @@ jobs:
           git config user.name "dept-cloud-keepalive"
           git add data/system.db
           git commit -m "data backup $(date '+%Y-%m-%d %H:%M:%S')" || true
-          git pull --rebase origin main 2>/dev/null || true
-          git push origin main || true
+          timeout 60 git pull --rebase origin main 2>/dev/null || true
+          timeout 60 git push origin main || true
           echo "数据已备份"

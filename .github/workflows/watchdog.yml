@@ -50,19 +50,23 @@ jobs:
               if [[ "$WFSPEC" == *:pub ]]; then
                 REPO=1759717772/dept-cloud-keepalive-pub
               fi
-              RUN=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 1 --json status -q '.[0].status' 2>/dev/null)
-              if [ -z "$RUN" ]; then RUN="none"; fi
-              echo "$K: 对应run状态=$RUN"
-              case "$RUN" in
-                in_progress|queued|pending)
-                  echo "$K: 有在途run，跳过（循环自愈/build中）"
-                  ;;
-                *)
-                  echo "$K: 无在途run -> 手动dispatch $WFNAME"
-                  gh workflow run "$WFNAME" --repo "$REPO" 2>&1 | tail -1
-                  sleep 3
-                  ;;
-              esac
+              echo "$K: 抢占重建（cancel卡死run释放并发锁，防排队阻塞）"
+              IDS=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 10 --json databaseId,status -q '.[]|select(.status=="in_progress")|.databaseId' 2>/dev/null | tr '\n' ' ')
+              if [ -n "$IDS" ]; then
+                for RID in $IDS; do
+                  [ "$RID" != "$GITHUB_RUN_ID" ] && { gh run cancel "$RID" --repo "$REPO" 2>/dev/null || true; }
+                done
+                echo "$K: 已cancel在途run: $IDS"
+                sleep 15
+              fi
+              ST=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 3 --json status -q '.[].status' 2>/dev/null | tr '\n' ' ')
+              if echo "$ST" | grep -qE "in_progress|queued|pending"; then
+                echo "$K: 已有run接管($ST)，等待上线"
+              else
+                echo "$K: 无run接管 -> 手动dispatch $WFNAME"
+                gh workflow run "$WFNAME" --repo "$REPO" 2>&1 | tail -1
+                sleep 3
+              fi
               REPORT="$REPORT $K=$CODE"
             fi
           done
