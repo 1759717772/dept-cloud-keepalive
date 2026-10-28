@@ -26,6 +26,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           BOARD="https://1759717772.github.io/dept-cloud-addr/addr.txt"
+          curl -sL --max-time 12 "$BOARD" 2>/dev/null | grep -q '=' || BOARD="https://raw.githubusercontent.com/1759717772/dept-cloud-addr/main/addr.txt"
           URL=$(curl -sL --max-time 15 "$BOARD" 2>/dev/null | grep '^backup1=' | cut -d= -f2-)
           VER=$(curl -sL --max-time 15 "$BOARD" 2>/dev/null | grep '^version=' | cut -d= -f2-)
           if [ -z "$URL" ]; then
@@ -122,7 +123,7 @@ jobs:
         run: |
           URL=$(cat /tmp/url.txt)
           VER=$(cat /tmp/ver.txt)
-          END=$(( $(date +%s) + 325*60 ))
+          END=$(( $(date +%s) + 100*60 ))
           FAILCNT=0
           while [ "$(date +%s)" -lt "$END" ]; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$URL" || true)
