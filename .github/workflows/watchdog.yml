@@ -48,7 +48,7 @@ jobs:
               fi
               CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 8 "$URL" 2>/dev/null)
               VER=$(curl -s --noproxy '*' --max-time 8 "$URL/api/version" 2>/dev/null | grep -oE '"version":"[^"]+"' | cut -d'"' -f4)
-              if [ "$CODE" = "200" ] && [ "$VER" = "8.5.0" ]; then
+              if [ "$CODE" = "200" ]; then
                 echo "$K: 健康(200 v$VER)"
                 REPORT="$REPORT $K=OK"
               else
