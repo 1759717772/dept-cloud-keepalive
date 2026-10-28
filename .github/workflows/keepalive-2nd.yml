@@ -58,7 +58,7 @@ jobs:
         run: |
           git clone "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-node.git" /tmp/dept
           echo "code commit: $(cd /tmp/dept && git log -1 --format=%h)"
-          echo "8.5.0" > /tmp/ver.txt
+          VER=$(grep -oE '"version":"[^"]+"' /tmp/dept/server.js | head -1 | cut -d'"' -f4); echo "$VER" > /tmp/ver.txt
           ls /tmp/dept | head -10
 
       - name: 下载 cloudflared

@@ -59,8 +59,8 @@ jobs:
         run: |
           git clone "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-node.git" /tmp/dept
           echo "code commit: $(cd /tmp/dept && git log -1 --format=%h)"
-          # 版本号固定 8.5.0，与 server.js /api/version 一致（看门狗以此比对）
-          echo "8.5.0" > /tmp/ver.txt
+          # 版本号动态提取自 server.js（看门狗不再写死版本比对）
+          VER=$(grep -oE '"version":"[^"]+"' /tmp/dept/server.js | head -1 | cut -d'"' -f4); echo "$VER" > /tmp/ver.txt
           ls /tmp/dept | head -10
 
       - name: 下载 cloudflared
