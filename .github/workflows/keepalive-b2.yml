@@ -169,6 +169,18 @@ jobs:
               PORT=18190 nohup node server.js > /tmp/server.log 2>&1 &
               sleep 3
             fi
+            # 定期数据回写（每10分钟）：防止配置/数据在隧道重建时丢失
+            if [ -z "$LASTBK" ] || [ $(( $(date +%s) - LASTBK )) -ge 600 ]; then
+              cd /tmp/dept 2>/dev/null && {
+                git add data/system.db 2>/dev/null
+                git commit -m "auto data backup $(date '+%Y-%m-%d %H:%M:%S')" 2>/dev/null || true
+                timeout 30 git pull --rebase origin main 2>/dev/null || true
+                timeout 30 git push origin main 2>/dev/null || true
+                cd /tmp
+              }
+              LASTBK=$(date +%s)
+              echo "定期数据回写完成 $(date '+%H:%M:%S')"
+            fi
             sleep 20
           done
           echo "本轮服务结束"
