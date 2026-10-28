@@ -112,7 +112,7 @@ jobs:
           VER=$(cat /tmp/ver.txt)
           cp "${GITHUB_WORKSPACE}/board.sh" /tmp/board.sh && chmod +x /tmp/board.sh
           NOW=$(date '+%Y-%m-%d %H:%M:%S')
-          bash /tmp/board.sh "biz=${URL}|biz2=${URL}|updated=${NOW}|updated_main=${NOW}" "$VER"
+          bash /tmp/board.sh "biz=${URL}|updated=${NOW}|updated_main=${NOW}" "$VER"
           echo "公告牌更新完成: $URL (version=$VER)"
 
       - name: 保活循环（330分钟；连续3次重建失败自动退出释放锁，防僵尸run阻塞看门狗）
@@ -151,7 +151,7 @@ jobs:
                 URL="$NEW"
                 cp "${GITHUB_WORKSPACE}/board.sh" /tmp/board.sh && chmod +x /tmp/board.sh
                 NOW=$(date '+%Y-%m-%d %H:%M:%S')
-                bash /tmp/board.sh "biz=${URL}|biz2=${URL}|updated=${NOW}|updated_main=${NOW}" "$VER" && echo "renew 公告牌成功: $URL" || echo "renew 公告牌失败(稍后看门狗兜底)"
+                bash /tmp/board.sh "biz=${URL}|updated=${NOW}|updated_main=${NOW}" "$VER" && echo "renew 公告牌成功: $URL" || echo "renew 公告牌失败(稍后看门狗兜底)"
               else
                 echo "重建失败第${FAILCNT}次(${NEW:-无新域名})"
                 if [ "$FAILCNT" -ge 3 ]; then
