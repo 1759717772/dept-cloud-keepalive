@@ -5,22 +5,19 @@ on:
   workflow_dispatch:
 concurrency:
   group: watchdog
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   patrol:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 探活全部隧道并自动重建
+      - name: 循环式持续看门狗（探活8隧道+自动重建+无缝接力）
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           set +e
-          RAW=$(curl -s --noproxy '*' --max-time 10 "https://raw.githubusercontent.com/1759717772/dept-cloud-addr/main/addr.txt" 2>/dev/null)
-          if [ -z "$RAW" ]; then
-            echo "公告牌读取失败，退出"
-            exit 0
-          fi
+          MAIN_REPO=1759717772/dept-cloud-keepalive
+          PUB_REPO=1759717772/dept-cloud-keepalive-pub
           declare -A WF
           WF[biz]=keepalive.yml
           WF[biz2]=keepalive-2nd.yml
@@ -30,45 +27,53 @@ jobs:
           WF[backup4]=keepalive-b4.yml:pub
           WF[backup5]=keepalive-b5.yml:pub
           WF[backup6]=keepalive-b6.yml:pub
-          REPORT=""
-          for K in biz biz2 backup1 backup2 backup3 backup4 backup5 backup6; do
-            URL=$(echo "$RAW" | grep "^${K}=" | cut -d= -f2-)
-            if [ -z "$URL" ]; then
-              echo "$K: 公告牌无此行"
-              REPORT="$REPORT $K=无行"
+          END=$(( $(date +%s) + 330*60 ))
+          ROUND=0
+          while [ $(date +%s) -lt $END ]; do
+            ROUND=$((ROUND+1))
+            NOW=$(date '+%H:%M:%S')
+            REPORT="[$NOW] round=$ROUND"
+            RAW=$(curl -s --noproxy '*' --max-time 10 "https://raw.githubusercontent.com/1759717772/dept-cloud-addr/main/addr.txt" 2>/dev/null)
+            if [ -z "$RAW" ]; then
+              echo "[$NOW] 公告牌读取失败，等待下轮"
+              sleep 90
               continue
             fi
-            CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 8 "$URL" 2>/dev/null)
-            VER=$(curl -s --noproxy '*' --max-time 8 "$URL/api/version" 2>/dev/null | grep -oE '"version":"[^"]+"' | cut -d'"' -f4)
-            if [ "$CODE" = "200" ] && [ "$VER" = "8.5.0" ]; then
-              echo "$K: 健康(200 v$VER)"
-              REPORT="$REPORT $K=OK"
-            else
-              echo "$K: 异常($CODE v$VER) -> 检查对应run"
-              WFSPEC=${WF[$K]}
-              WFNAME=${WFSPEC%%:*}
-              REPO=1759717772/dept-cloud-keepalive
-              if [[ "$WFSPEC" == *:pub ]]; then
-                REPO=1759717772/dept-cloud-keepalive-pub
+            for K in biz biz2 backup1 backup2 backup3 backup4 backup5 backup6; do
+              URL=$(echo "$RAW" | grep "^${K}=" | cut -d= -f2-)
+              if [ -z "$URL" ]; then
+                echo "$K: 公告牌无此行"
+                REPORT="$REPORT $K=无行"
+                continue
               fi
-              echo "$K: 抢占重建（cancel卡死run释放并发锁，防排队阻塞）"
-              IDS=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 10 --json databaseId,status -q '.[]|select(.status=="in_progress")|.databaseId' 2>/dev/null | tr '\n' ' ')
-              if [ -n "$IDS" ]; then
-                for RID in $IDS; do
-                  [ "$RID" != "$GITHUB_RUN_ID" ] && { gh run cancel "$RID" --repo "$REPO" 2>/dev/null || true; }
-                done
-                echo "$K: 已cancel在途run: $IDS"
-                sleep 15
-              fi
-              ST=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 3 --json status -q '.[].status' 2>/dev/null | tr '\n' ' ')
-              if echo "$ST" | grep -qE "in_progress|queued|pending"; then
-                echo "$K: 已有run接管($ST)，等待上线"
+              CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 8 "$URL" 2>/dev/null)
+              VER=$(curl -s --noproxy '*' --max-time 8 "$URL/api/version" 2>/dev/null | grep -oE '"version":"[^"]+"' | cut -d'"' -f4)
+              if [ "$CODE" = "200" ] && [ "$VER" = "8.5.0" ]; then
+                echo "$K: 健康(200 v$VER)"
+                REPORT="$REPORT $K=OK"
               else
-                echo "$K: 无run接管 -> 手动dispatch $WFNAME"
+                echo "$K: 异常($CODE v$VER) -> 立即重建"
+                WFSPEC=${WF[$K]}
+                WFNAME=${WFSPEC%%:*}
+                REPO=$MAIN_REPO
+                if [[ "$WFSPEC" == *:pub ]]; then
+                  REPO=$PUB_REPO
+                fi
+                IDS=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 10 --json databaseId,status -q '.[]|select(.status=="in_progress")|.databaseId' 2>/dev/null | tr '\n' ' ')
+                if [ -n "$IDS" ]; then
+                  for RID in $IDS; do
+                    [ "$RID" != "$GITHUB_RUN_ID" ] && { gh run cancel "$RID" --repo "$REPO" 2>/dev/null || true; }
+                  done
+                  echo "$K: 已废弃旧run: $IDS"
+                  sleep 10
+                fi
+                echo "$K: dispatch $WFNAME -> $REPO"
                 gh workflow run "$WFNAME" --repo "$REPO" 2>&1 | tail -1
-                sleep 3
+                REPORT="$REPORT $K=异常($CODE)->已重建"
               fi
-              REPORT="$REPORT $K=$CODE"
-            fi
+            done
+            echo "$REPORT"
+            sleep 90
           done
-          echo "watchdog 巡检完成: $REPORT"
+          echo "本轮看门狗到期，self-dispatch 无缝接力..."
+          gh workflow run watchdog.yml --repo "$MAIN_REPO" 2>&1 | tail -1
