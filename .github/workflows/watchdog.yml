@@ -52,24 +52,21 @@ jobs:
                 echo "$K: 健康(200 v$VER)"
                 REPORT="$REPORT $K=OK"
               else
-                echo "$K: 异常($CODE v$VER) -> 立即重建"
                 WFSPEC=${WF[$K]}
                 WFNAME=${WFSPEC%%:*}
                 REPO=$MAIN_REPO
                 if [[ "$WFSPEC" == *:pub ]]; then
                   REPO=$PUB_REPO
                 fi
-                IDS=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 10 --json databaseId,status -q '.[]|select(.status=="in_progress")|.databaseId' 2>/dev/null | tr '\n' ' ')
-                if [ -n "$IDS" ]; then
-                  for RID in $IDS; do
-                    [ "$RID" != "$GITHUB_RUN_ID" ] && { gh run cancel "$RID" --repo "$REPO" 2>/dev/null || true; }
-                  done
-                  echo "$K: 已废弃旧run: $IDS"
-                  sleep 10
+                ACTIVE=$(gh run list --repo "$REPO" --workflow "$WFNAME" --limit 10 --json databaseId,status -q '.[]|select(.status=="in_progress" or .status=="queued")|.databaseId' 2>/dev/null | tr '\n' ' ')
+                if [ -n "$ACTIVE" ]; then
+                  echo "$K: 异常($CODE v$VER) 但在途run($ACTIVE)部署中，等待不干预"
+                  REPORT="$REPORT $K=异常($CODE)->在途run等待"
+                else
+                  echo "$K: 异常($CODE v$VER) 无在途run，dispatch $WFNAME"
+                  gh workflow run "$WFNAME" --repo "$REPO" 2>&1 | tail -1
+                  REPORT="$REPORT $K=异常($CODE)->已dispatch"
                 fi
-                echo "$K: dispatch $WFNAME -> $REPO"
-                gh workflow run "$WFNAME" --repo "$REPO" 2>&1 | tail -1
-                REPORT="$REPORT $K=异常($CODE)->已重建"
               fi
             done
             echo "$REPORT"
