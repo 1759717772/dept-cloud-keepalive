@@ -1,0 +1,72 @@
+name: board-writeback
+
+# [需求7] 公告牌回写（2026-11-10）
+# 事件背景：保活链在跑，但 addr.txt 的 updated 停滞 10.7 小时无人发现，
+# 客户端因此会拿到"看着像挂了"的过期指针，监控也无法据此判断隧道时效。
+# 本工作流只做一件事：从境外出口实测 biz / 2nd，成功则把 version 与 updated 回写公告牌。
+# 约束：只改 version / updated 两行，绝不动域名指向；探测失败不写 updated（避免造假健康），改发钉钉告警。
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  writeback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 实测两条域名
+        id: probe
+        run: |
+          set -u
+          BOARD_PUB="https://1759717772.github.io/dept-cloud-addr/addr.txt"
+          BODY=$(curl -sL --max-time 15 "$BOARD_PUB" || true)
+          echo "$BODY" | grep -q '^version=' || BODY=$(curl -sL --max-time 15 "https://raw.githubusercontent.com/1759717772/dept-cloud-addr/main/addr.txt" || true)
+
+          BIZ=$(echo "$BODY" | grep '^biz=' | cut -d= -f2- | tr -d '\r')
+          SECOND=$(echo "$BODY" | grep '^2nd=' | cut -d= -f2- | tr -d '\r')
+          [ -n "$BIZ" ] || BIZ=$(echo "$BODY" | grep '^backup1=' | cut -d= -f2- | tr -d '\r')
+          [ -n "$SECOND" ] || SECOND=$(echo "$BODY" | grep '^backup=' | cut -d= -f2- | tr -d '\r')
+
+          ok=0
+          ver=""
+          for pair in "biz:$BIZ" "2nd:$SECOND"; do
+            name="${pair%%:*}"; url="${pair#*:}"
+            [ -z "$url" ] && { echo "$name 无地址"; continue; }
+            code=$(curl -s -o /tmp/r.json -w '%{http_code}' --max-time 15 "$url/api/version" 2>/dev/null || echo 000)
+            rv=$(grep -oE '"version":"[^"]+"' /tmp/r.json 2>/dev/null | head -1 | cut -d'"' -f4)
+            echo "$name | http=$code | version=${rv:-—}"
+            if [ "$code" = "200" ] && [ -n "$rv" ]; then ok=$((ok+1)); [ -n "$ver" ] || ver="$rv"; fi
+          done
+
+          echo "ok=$ok version=$ver"
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: 回写 version / updated
+        if: steps.probe.outputs.ok != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          VER: ${{ steps.probe.outputs.ver }}
+        run: |
+          set -e
+          git clone --depth=1 "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-addr.git" /tmp/addr
+          cd /tmp/addr
+          NOW=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')
+          if grep -q '^version=' addr.txt; then sed -i "s/^version=.*/version=${VER}/" addr.txt; else echo "version=${VER}" >> addr.txt; fi
+          sed -i "s/^updated=.*/updated=${NOW}/" addr.txt
+          git -c user.name=dept -c user.email=dept@local diff --quiet && { echo "无变化，跳过提交"; exit 0; }
+          git add addr.txt
+          git -c user.name=dept -c user.email=dept@local commit -m "board ${NOW} (writeback: 实测 ${VER})"
+          git push origin main
+          echo "已回写：version=${VER} updated=${NOW}"
+
+      - name: 探测失败则不回写并留痕
+        if: steps.probe.outputs.ok == '0'
+        run: |
+          echo "两条域名均未返回有效 /api/version，本轮不回写 updated（避免制造假健康）"
+          exit 0
