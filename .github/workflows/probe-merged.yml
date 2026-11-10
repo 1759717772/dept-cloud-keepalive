@@ -1,0 +1,72 @@
+name: dept-probe-merged
+
+# [需求7] 合并后的保活探测（2026-11-10）
+# 只做「探测 + 判定链 + 结果输出」，不自建 origin、不改公告牌指向、不重建隧道，
+# 避免与现有 keepalive-* 重建链争抢；判定链：node 存活 → 隧道回通 → 公告牌回写时效。
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '10 */2 * * *'      # 每 2 小时一次（需求要求 1-2 小时）
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 探测两条业务域名与公告牌时效
+        run: |
+          set -u
+          BOARD="https://1759717772.github.io/dept-cloud-addr/addr.txt"
+          BODY=$(curl -sL --max-time 15 "$BOARD" || true)
+          echo "$BODY" | grep -q '^version=' || BODY=$(curl -sL --max-time 15 "https://raw.githubusercontent.com/1759717772/dept-cloud-addr/main/addr.txt" || true)
+          echo "::group::公告牌"
+          echo "$BODY" | grep -E '^(biz|2nd|backup1|backup|version|updated)=' || true
+          echo "::endgroup::"
+
+          VER=$(echo "$BODY" | grep '^version=' | cut -d= -f2- | tr -d '\r')
+          UPD=$(echo "$BODY" | grep '^updated=' | cut -d= -f2- | tr -d '\r')
+          echo "BOARD_VERSION=$VER"
+          echo "BOARD_UPDATED=$UPD"
+
+          probe() {
+            LABEL="$1"; URL="$2"
+            [ -z "$URL" ] && { echo "$LABEL 跳过（公告牌无地址）"; return; }
+            CODE=$(curl -s -o /tmp/v.json -w '%{http_code}' --max-time 15 "$URL/api/version" 2>/dev/null || echo 000)
+            RV=$(grep -oE '"version":"[^"]+"' /tmp/v.json 2>/dev/null | head -1 | cut -d'"' -f4)
+            if [ "$CODE" = "200" ] && [ -n "$RV" ]; then
+              KIND="node存活"
+            elif [ "$CODE" = "503" ]; then
+              KIND="隧道通但origin挂"
+            elif [ "$CODE" = "000" ]; then
+              KIND="隧道/网络不可达"
+            else
+              KIND="HTTP异常"
+            fi
+            echo "$LABEL | url=$URL | http=$CODE | version=${RV:-—} | $KIND"
+            echo "$LABEL,$CODE,${RV:-}" >> /tmp/probe.csv
+          }
+
+          rm -f /tmp/probe.csv
+          probe "主链路biz" "$(echo "$BODY" | grep '^biz=' | cut -d= -f2- | tr -d '\r')"
+          probe "2号机2nd"  "$(echo "$BODY" | grep '^2nd=' | cut -d= -f2- | tr -d '\r')"
+          probe "主链路backup1" "$(echo "$BODY" | grep '^backup1=' | cut -d= -f2- | tr -d '\r')"
+
+          echo "::group::判定链"
+          awk -F, '{print}' /tmp/probe.csv || true
+          echo "::endgroup::"
+
+          # 判定链结论
+          if grep -q ',200,' /tmp/probe.csv 2>/dev/null; then
+            NODE="存活"
+          else
+            NODE="异常（全部域名无法返回有效 /api/version）"
+          fi
+          if grep -qE ',(200|503),' /tmp/probe.csv 2>/dev/null; then TUNNEL="回通"; else TUNNEL="不通"; fi
+          echo "L1 node: $NODE"
+          echo "L2 隧道: $TUNNEL"
+          echo "L3 公告牌: version=${VER:-—} updated=${UPD:-—}（超过 90 分钟未回写即视为停滞）"
+
