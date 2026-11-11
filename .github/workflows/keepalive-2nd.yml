@@ -180,8 +180,25 @@ jobs:
           git remote set-url origin "https://oauth2:${GH_TOKEN}@github.com/1759717772/dept-cloud-node.git"
           git config user.email "dept-cloud@users.noreply.github.com"
           git config user.name "dept-cloud-keepalive"
-          git add data/system.db
-          git commit -m "data backup 2nd $(date '+%Y-%m-%d %H:%M:%S')" || true
-          timeout 60 git pull --rebase origin main 2>/dev/null || true
-          timeout 60 git push origin main || true
-          echo "数据已备份"
+          # [修复] 原先 git pull --rebase + || true 会把二进制库冲突吞掉，push 被拒仍打印"数据已备份"（假成功）。
+          # 改为：二进制库单独推 data-backup 分支（force 覆盖只保留最新快照），与 main 的文本提交彻底解耦。
+          if [ ! -f data/system.db ]; then
+            echo "::error::未找到 data/system.db，备份未执行"
+            exit 1
+          fi
+          SIZE=$(wc -c < data/system.db)
+          SHA=$(sha256sum data/system.db | cut -d' ' -f1)
+          echo "备份源 size=${SIZE} sha256=${SHA}"
+          if [ "$SIZE" -lt 4096 ]; then
+            echo "::error::data/system.db 仅 ${SIZE} 字节，疑似损坏，拒绝提交"
+            exit 1
+          fi
+          git checkout -B data-backup
+          git add -f data/system.db
+          git commit -m "data backup 2nd $(date '+%Y-%m-%d %H:%M:%S') size=${SIZE}" || echo "库未变化，沿用上次快照"
+          if timeout 90 git push -f origin data-backup; then
+            echo "备份成功 commit=$(git rev-parse --short HEAD) size=${SIZE}"
+          else
+            echo "::error::备份推送失败（分支 data-backup）"
+            exit 1
+          fi
